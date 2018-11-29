@@ -4,6 +4,15 @@ A worker that listens to a StepFunctions activity and executes a provided functi
 
 The StepFunctions Activity Worker encapsulates all the parts of communicating with the StepFunctions API so you don't have to worry about task heartbeats or maintaining task tokens and success/failure scenarios; all you have to worry about is executing the task.
 
+### Installation
+
+Install from [PyPI](https://pypi.org/project/stepfunctions-activity-worker/):
+
+```
+pip install stepfunctions_activity_worker
+```
+
+
 ### Usage
 
 ```python

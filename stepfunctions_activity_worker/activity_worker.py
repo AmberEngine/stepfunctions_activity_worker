@@ -15,7 +15,7 @@ class ActivityWorker:
 
     def __init__(self, activity_arn, activity_fxn, heartbeat_interval=4,
                  *, client=None, **kwargs):
-        """Instantiate with the activity ARN to listen to and the callable."""
+        """Instantiate with an Activity ARN and a callable."""
         self.activity_kwargs = {
             "activityArn": activity_arn,
             "workerName": kwargs.get("worker_name", socket.gethostname()),
@@ -33,8 +33,8 @@ class ActivityWorker:
         StepFunctions GetActivitiyTask opens connections for 60 seconds.
         botocores's default read timeout is 60 seconds.
 
-        Occaisonally delays will cause the socket to close before the request
-        completes, causing an exception to be raised.
+        Occaisonally the socket will close before the request completes,
+        causing an exception to be raised.
         """
         config = botocore.config.Config(read_timeout=70)
         return boto3.client('stepfunctions', config=config)
@@ -42,10 +42,6 @@ class ActivityWorker:
     def __call__(self):
         """Listen for and run a StepFunctions activity task."""
         self.perform_task()
-
-    def _send_heartbeat(self, task):
-        self.stepfunctions.send_task_heartbeat(taskToken=task["taskToken"])
-        print("♡")
 
     def perform_task(self):
         """Listen for and run a Stepfunctions activity task."""
@@ -57,15 +53,18 @@ class ActivityWorker:
         print("Recieved a task!")
         print(json.dumps(json.loads(task["input"]), indent=4, sort_keys=True))
 
-        task_input = json.loads(task["input"])
-
-        heartbeat = Heartbeat(self.heartbeat_interval, self._send_heartbeat,
-                              args=(task,), kwargs=None)
+        heartbeat = Heartbeat(
+            self.heartbeat_interval,
+            self.stepfunctions.send_task_heartbeat,
+            args=None,
+            kwargs={"taskToken": task["taskToken"]}
+        )
 
         try:
             print(f"Performing {self.activity_name}")
             with heartbeat:
-                results = self.activity_fxn(**task_input)
+                task_input = json.loads(task["input"])
+                output = self.activity_fxn(**task_input)
         except (Exception, KeyboardInterrupt) as error:
             *_, raw_traceback = sys.exc_info()
             formatted_traceback = traceback.format_tb(raw_traceback)
@@ -79,12 +78,12 @@ class ActivityWorker:
 
             raise
 
-        # NOTE: The output formatting may change depending on your workflow
-        output = {**task_input, self.activity_name: results}
         print(f"{self.activity_name} is completed!")
         print(json.dumps(output, indent=4, sort_keys=True))
-        self.stepfunctions.send_task_success(taskToken=task["taskToken"],
-                                             output=json.dumps(output))
+        self.stepfunctions.send_task_success(
+            taskToken=task["taskToken"],
+            output=json.dumps(output, sort_keys=True),
+        )
 
     def listen(self):
         """Repeatedly listen & execute tasks associated with this activity."""

@@ -17,4 +17,5 @@ class Heartbeat(threading.Timer):
         """Execute timer function until .cancel() is called."""
         while not self.finished.is_set():
             self.function(*self.args, **self.kwargs)
+            print("♡")
             self.finished.wait(self.interval)
