@@ -1,5 +1,4 @@
 """Tests for stepfunctions_activity_worker.activity_worker."""
-import itertools
 import json
 from unittest import mock
 
@@ -58,6 +57,22 @@ def activity_worker_kwargs(sfn_client, activity_name):
     }
 
 
+def test_activity_worker__call__does_perform_task(activity_worker_kwargs,
+                                                  boto3_client):
+    """Assert ActivityWorker.__call__ uses .perform_task().
+
+    This is a test to maintain version compatibility.
+
+    If this test is failing (because this functionality is no longer desired)
+    then remove it.
+    """
+    worker = ActivityWorker(**activity_worker_kwargs)
+    worker.perform_task = mock.Mock()
+    worker()
+
+    worker.perform_task.assert_called_once()
+
+
 def test_activity_worker_default_client(activity_worker_kwargs, boto3_client):
     """Assert that ActivityWorker creates a configured default client.
 
@@ -82,17 +97,20 @@ def test_activity_worker_default_client(activity_worker_kwargs, boto3_client):
     ),
 ])
 def test_activity_worker_gets_tasks(activity_worker_kwargs, tasks):
-    """Assert that ActivityWorker.__call__ polls for a task.
+    """Assert that ActivityWorker.perform_task polls for a task.
 
     Outgoing Command: Assert sent message.
     """
     mock_client = activity_worker_kwargs["client"]
-    mock_client.get_activity_task.side_effect = tasks
+    mock_client.get_activity_task.side_effect = [
+        *tasks, KeyboardInterrupt("This is a keyboard interrupt")
+    ]
 
     worker = ActivityWorker(**activity_worker_kwargs)
-    worker()
+    worker.listen()
+    worker.task_pool.shutdown()
 
-    assert len(mock_client.get_activity_task.mock_calls) == len(tasks)
+    assert len(mock_client.get_activity_task.mock_calls) == len(tasks) + 1
 
     expected_call = mock.call(
         activityArn=activity_worker_kwargs["activity_arn"],
@@ -111,20 +129,19 @@ def test_activity_worker_calls_activity_fxn_w_task_input(
     activity_worker_kwargs,
     task,
 ):
-    """Assert ActivityWorker.__call__ passes task input to activity_fxn.
+    """Assert ActivityWorker.perform_task passes task input to activity_fxn.
 
     Outgoing Command: Assert sent message.
     """
-    mock_client = activity_worker_kwargs["client"]
-    mock_client.get_activity_task.return_value = {
-        "taskToken": "abc123",
-        "input": json.dumps(task),
-    }
-
     activity_fxn = activity_worker_kwargs["activity_fxn"]
 
     worker = ActivityWorker(**activity_worker_kwargs)
-    worker()
+    worker.perform_task(
+        {
+            "taskToken": "abc123",
+            "input": json.dumps(task),
+        }
+    )
 
     activity_fxn.assert_called_once_with(**task)
 
@@ -132,16 +149,14 @@ def test_activity_worker_calls_activity_fxn_w_task_input(
 @pytest.mark.parametrize("task_token", ["zzz999", "def456", "klaslkjfsa888kl"])
 def test_activity_worker_sends_taskToken_on_success(activity_worker_kwargs,
                                                     task_token):
-    """Assert ActivityWorker.__call__ sends taskToken on task success.
+    """Assert ActivityWorker.perform_task sends taskToken on task success.
 
     Outgoing Command: Assert sent message.
     """
     mock_client = activity_worker_kwargs["client"]
-    mock_client.get_activity_task.return_value = {"taskToken": task_token,
-                                                  "input": "{}"}
 
     worker = ActivityWorker(**activity_worker_kwargs)
-    worker()
+    worker.perform_task({"taskToken": task_token, "input": "{}"})
 
     mock_client.send_task_success.assert_called_once_with(
         taskToken=task_token,
@@ -156,21 +171,55 @@ def test_activity_worker_sends_taskToken_on_success(activity_worker_kwargs,
 def test_activity_worker_puts_activity_fxn_return_into_output(
     activity_worker_kwargs, fxn_output,
 ):
-    """Assert ActivityWorker.__call__ sends output on task success.
+    """Assert ActivityWorker.perform_task sends output on task success.
 
     Outgoing Command: Assert sent message.
     """
     mock_client = activity_worker_kwargs["client"]
-    mock_client.get_activity_task.return_value = {
-        "taskToken": "abc123",
-        "input": "{}",
-    }
 
     activity_fxn = activity_worker_kwargs["activity_fxn"]
     activity_fxn.return_value = fxn_output
 
     worker = ActivityWorker(**activity_worker_kwargs)
-    worker()
+    worker.perform_task({
+        "taskToken": "abc123",
+        "input": "{}",
+    })
+
+    mock_client.send_task_success.assert_called_once_with(
+        taskToken=mock.ANY,
+        output=json.dumps(fxn_output, sort_keys=True),
+    )
+
+
+@pytest.mark.parametrize("fxn_output", [
+    ({"foo": "bar"}),
+    ({"foo": "blue", "hello": ["world", "mark"]}),
+])
+def test_activity_worker_thread_completes_properly(
+    activity_worker_kwargs, fxn_output,
+):
+    """Assert ActivityWorker.listen() sends output on task success.
+
+    Tested separately because of threading.
+
+    Outgoing Command: Assert sent message.
+    """
+    mock_client = activity_worker_kwargs["client"]
+    mock_client.get_activity_task.side_effect = [
+        {
+            "taskToken": "abc123",
+            "input": "{}",
+        },
+        KeyboardInterrupt("This is a keyboard interrupt")
+    ]
+
+    activity_fxn = activity_worker_kwargs["activity_fxn"]
+    activity_fxn.return_value = fxn_output
+
+    worker = ActivityWorker(**activity_worker_kwargs)
+    worker.listen()
+    worker.task_pool.shutdown()
 
     mock_client.send_task_success.assert_called_once_with(
         taskToken=mock.ANY,
@@ -186,16 +235,12 @@ def test_activity_worker_sends_task_failure_when_exception_is_raised(
     activity_worker_kwargs,
     exception_message,
 ):
-    """Assert ActivityWorker.__call__ sends task failure on exceptions.
+    """Assert ActivityWorker.perform_task sends task failure on exceptions.
 
     Outgoing Command: Assert sent message.
     """
     task_token = "abc123"
     mock_client = activity_worker_kwargs["client"]
-    mock_client.get_activity_task.return_value = {
-        "taskToken": task_token,
-        "input": "{}",
-    }
 
     activity_fxn = activity_worker_kwargs["activity_fxn"]
     activity_fxn.side_effect = Exception(exception_message)
@@ -203,7 +248,10 @@ def test_activity_worker_sends_task_failure_when_exception_is_raised(
     worker = ActivityWorker(**activity_worker_kwargs)
 
     with pytest.raises(Exception):
-        worker()
+        worker.perform_task({
+            "taskToken": task_token,
+            "input": "{}",
+        })
 
     mock_client.send_task_failure(
         taskToken=task_token,
@@ -216,7 +264,7 @@ def test_activity_worker_sends_task_heartbeat(
     activity_worker_kwargs,
     mock_Heartbeat,
 ):
-    """Assert ActivityWorker.__call__ sends task heartbeat.
+    """Assert ActivityWorker.perform_task sends task heartbeat.
 
     Outgoing Command: Assert sent message.
     """
@@ -226,10 +274,9 @@ def test_activity_worker_sends_task_heartbeat(
     }
 
     mock_client = activity_worker_kwargs["client"]
-    mock_client.get_activity_task.return_value = task
 
     worker = ActivityWorker(**activity_worker_kwargs)
-    worker()
+    worker.perform_task(task)
 
     mock_Heartbeat.assert_called_with(
         activity_worker_kwargs["heartbeat_interval"],
@@ -252,16 +299,16 @@ def test_activity_worker_listen_listens_until_keyboard_interrupt(
     Incoming Command(?): Assert direct public side effects.
     """
     mock_client = activity_worker_kwargs["client"]
-    infinite_tasks = itertools.repeat({"taskToken": "abc123", "input": "{}"})
-    mock_client.get_activity_task.side_effect = infinite_tasks
+    output = [{"taskToken": "abc123", "input": "{}"}] * 10
+    mock_client.get_activity_task.side_effect = output
 
     # There's no real way to insert a KeyboardInterrupt, but we can make it a
     # side effect of activity_fxn
     activity_fxn = activity_worker_kwargs["activity_fxn"]
-    output = [dict()] * 438
     output.append(KeyboardInterrupt("This is a keyboard interrupt"))
     output.append(pytest.fail)  # fail on output after KeyboardInterrupt
-    activity_fxn.side_effect = output
+    activity_fxn.return_value = {'taskToken': 'mockToken'}
 
     worker = ActivityWorker(**activity_worker_kwargs)
     worker.listen()
+    worker.task_pool.shutdown()

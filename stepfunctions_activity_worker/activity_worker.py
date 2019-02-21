@@ -1,4 +1,5 @@
 """Listen for a Activity task and then perform it."""
+import concurrent.futures
 import json
 import socket
 import sys
@@ -14,7 +15,7 @@ class ActivityWorker:
     """Activity worker for a Stepfunctions task."""
 
     def __init__(self, activity_arn, activity_fxn, heartbeat_interval=4,
-                 *, client=None, **kwargs):
+                 worker_count=1, *, client=None, **kwargs):
         """Instantiate with an Activity ARN and a callable."""
         self.activity_kwargs = {
             "activityArn": activity_arn,
@@ -23,6 +24,9 @@ class ActivityWorker:
         self.activity_name = activity_arn.split(":")[-1]
         self.activity_fxn = activity_fxn
         self.heartbeat_interval = heartbeat_interval
+        self.task_pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=worker_count
+        )
 
         self.stepfunctions = client if client else self._default_config()
 
@@ -40,18 +44,20 @@ class ActivityWorker:
         return boto3.client('stepfunctions', config=config)
 
     def __call__(self):
-        """Listen for and run a StepFunctions activity task."""
         self.perform_task()
 
-    def perform_task(self):
-        """Listen for and run a Stepfunctions activity task."""
+    def _poll_for_task(self):
         task = dict()
         while not task.get("taskToken"):
-            print("Polling for an activity task...")
+            print("Polling for an activity task.")
             task = self.stepfunctions.get_activity_task(**self.activity_kwargs)
-
         print("Recieved a task!")
         print(json.dumps(json.loads(task["input"]), indent=4, sort_keys=True))
+        return task
+
+    def perform_task(self, task=None):
+        """Listen for and run a Stepfunctions activity task."""
+        task = self._poll_for_task() if not task else task
 
         heartbeat = Heartbeat(
             self.heartbeat_interval,
@@ -66,10 +72,10 @@ class ActivityWorker:
                 task_input = json.loads(task["input"])
                 output = self.activity_fxn(**task_input)
         except (Exception, KeyboardInterrupt) as error:
+            print(f"{self.activity_name} failed!")
+            
             *_, raw_traceback = sys.exc_info()
             formatted_traceback = traceback.format_tb(raw_traceback)
-
-            print(f"{self.activity_name} failed!")
             self.stepfunctions.send_task_failure(
                 taskToken=task["taskToken"],
                 error=str(error)[:256],
@@ -90,6 +96,8 @@ class ActivityWorker:
         print(f"Listening for {self.activity_name}...")
         try:
             while True:
-                self()
+                task = self._poll_for_task()
+                self.task_pool.submit(self.perform_task, task)
+
         except (KeyboardInterrupt):
             print("\nStopping listener...")
