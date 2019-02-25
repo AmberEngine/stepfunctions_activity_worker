@@ -10,7 +10,7 @@ tests_require = install_requires + [
 
 setup(
     name="stepfunctions_activity_worker",
-    version="1.1.0",
+    version="1.1.1",
     liscense="MIT",
     url="https://github.com/AmberEngine/stepfunctions_activity_worker",
 

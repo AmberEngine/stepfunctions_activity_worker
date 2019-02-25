@@ -24,7 +24,7 @@ class ActivityWorker:
         self.activity_name = activity_arn.split(":")[-1]
         self.activity_fxn = activity_fxn
         self.heartbeat_interval = heartbeat_interval
-        self.task_pool = concurrent.futures.ThreadPoolExecutor(
+        self.task_pool = concurrent.futures.ProcessPoolExecutor(
             max_workers=worker_count
         )
 
@@ -73,7 +73,7 @@ class ActivityWorker:
                 output = self.activity_fxn(**task_input)
         except (Exception, KeyboardInterrupt) as error:
             print(f"{self.activity_name} failed!")
-            
+
             *_, raw_traceback = sys.exc_info()
             formatted_traceback = traceback.format_tb(raw_traceback)
             self.stepfunctions.send_task_failure(
