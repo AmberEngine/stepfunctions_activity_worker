@@ -1,6 +1,7 @@
 """Tests for stepfunctions_activity_worker.activity_worker."""
 import json
 from unittest import mock
+import time
 
 import boto3
 import pytest
@@ -312,3 +313,35 @@ def test_activity_worker_listen_listens_until_keyboard_interrupt(
     worker = ActivityWorker(**activity_worker_kwargs)
     worker.listen()
     worker.task_pool.shutdown()
+
+
+def test_activity_worker_listen_blocks_at_max_workers(
+        activity_worker_kwargs
+):
+    """Assert ActivityWorker.listen() will block on worker availability.
+
+    Once get_activity_task() returns a task object, AWS starts the timeout
+    countdown for that task, but if the number of tasks already being worked
+    one is equal to or greater than the worker_count then that task will be
+    queued, which could cause it to timeout or heartbeat timeout before work
+    has started on it.
+
+    This tests that .listen() will block on workers becoming available before
+    polling for new tasks.
+    """
+    def activity_fxn(*args, **kwargs):
+        time.sleep(0.1)
+
+    activity_worker_kwargs['activity_fxn'] = activity_fxn
+    mock_client = activity_worker_kwargs["client"]
+    output = [{"taskToken": "abc123", "input": "{}"}] * 3
+    output.append(KeyboardInterrupt("This is a keyboard interrupt"))
+    mock_client.get_activity_task.side_effect = output
+    worker = ActivityWorker(**activity_worker_kwargs)
+    before_time = time.time()
+    worker.listen()
+
+    after_time = time.time()
+    worker.task_pool.shutdown()
+    assert mock_client.get_activity_task.call_count == len(output)
+    assert after_time - before_time >= 0.3

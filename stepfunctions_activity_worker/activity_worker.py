@@ -3,6 +3,7 @@ import concurrent.futures
 import json
 import socket
 import sys
+from threading import Semaphore
 import traceback
 
 import boto3
@@ -24,9 +25,10 @@ class ActivityWorker:
         self.activity_name = activity_arn.split(":")[-1]
         self.activity_fxn = activity_fxn
         self.heartbeat_interval = heartbeat_interval
-        self.task_pool = concurrent.futures.ProcessPoolExecutor(
+        self.task_pool = concurrent.futures.ThreadPoolExecutor(
             max_workers=worker_count
         )
+        self._task_semaphore = Semaphore(worker_count)
 
         self.stepfunctions = client if client else self._default_config()
 
@@ -81,7 +83,7 @@ class ActivityWorker:
                 error=str(error)[:256],
                 cause="\n".join(formatted_traceback),
             )
-
+            self._task_semaphore.release()
             raise
 
         print(f"{self.activity_name} is completed!")
@@ -90,14 +92,16 @@ class ActivityWorker:
             taskToken=task["taskToken"],
             output=json.dumps(output, sort_keys=True),
         )
+        self._task_semaphore.release()
 
     def listen(self):
         """Repeatedly listen & execute tasks associated with this activity."""
         print(f"Listening for {self.activity_name}...")
         try:
             while True:
+                self._task_semaphore.acquire()
                 task = self._poll_for_task()
                 self.task_pool.submit(self.perform_task, task)
 
-        except (KeyboardInterrupt):
+        except KeyboardInterrupt:
             print("\nStopping listener...")
