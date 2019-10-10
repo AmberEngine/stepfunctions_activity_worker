@@ -47,6 +47,7 @@ class ActivityWorker:
         return boto3.client('stepfunctions', config=config)
 
     def __call__(self):
+        """Perform task execution."""
         self.perform_task()
 
     def _poll_for_task(self):
