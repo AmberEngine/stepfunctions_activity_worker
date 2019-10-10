@@ -27,7 +27,7 @@ def my_task(**task_input):
 
 if __name__ == "__main__":
     activity_arn = "PLACE YOUR ACTIVITY ARN HERE"
-    worker = ActiityWorker(activity_arn, my_task)
+    worker = ActivityWorker(activity_arn, my_task)
     worker.listen()
 ```
 
