@@ -27,7 +27,7 @@ def my_task(**task_input):
 
 if __name__ == "__main__":
     activity_arn = "PLACE YOUR ACTIVITY ARN HERE"
-    worker = ActiityWorker(activity_arn, my_task)
+    worker = ActivityWorker(activity_arn, my_task)
     worker.listen()
 ```
 
@@ -44,11 +44,16 @@ import boto3
 import botocore
 from stepfunctions_activity_worker import ActivityWorker
 
+def my_task(**task_input):
+    """Perform the task based on this task's input."""
+    # Perform your task here! 
+    return {"result": "done!"}
+    
 config = botocore.config.Config(
   read_timeout=70,
   # Insert other custom configuration here
 )
 stepfunctions = boto3.client('stepfunctions', config=config)
 
-activity_worker = ActivityWorker(my_function, client=stepfunctions)
+activity_worker = ActivityWorker(activity_arn, my_task, client=stepfunctions)
 ```
