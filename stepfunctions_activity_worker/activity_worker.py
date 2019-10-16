@@ -8,6 +8,7 @@ import traceback
 
 import boto3
 import botocore.config
+from botocore.exceptions import ClientError
 
 from .heartbeat import Heartbeat
 
@@ -46,6 +47,7 @@ class ActivityWorker:
         return boto3.client('stepfunctions', config=config)
 
     def __call__(self):
+        """Perform task execution."""
         self.perform_task()
 
     def _poll_for_task(self):
@@ -83,16 +85,22 @@ class ActivityWorker:
                 error=str(error)[:256],
                 cause="\n".join(formatted_traceback),
             )
-            self._task_semaphore.release()
             raise
+        finally:
+            self._task_semaphore.release()
 
-        print(f"{self.activity_name} is completed!")
-        print(json.dumps(output, indent=4, sort_keys=True))
-        self.stepfunctions.send_task_success(
-            taskToken=task["taskToken"],
-            output=json.dumps(output, sort_keys=True),
-        )
-        self._task_semaphore.release()
+        try:
+            self.stepfunctions.send_task_success(
+                taskToken=task["taskToken"],
+                output=json.dumps(output, sort_keys=True),
+            )
+            print(f"{self.activity_name} is completed!")
+            print(json.dumps(output, indent=4, sort_keys=True))
+        except ClientError as exception:
+            print("Execution completed but could not send task success.")
+            print(exception)
+        finally:
+            self._task_semaphore.release()
 
     def listen(self):
         """Repeatedly listen & execute tasks associated with this activity."""
